@@ -51,20 +51,24 @@ class JigglerController:
         self._thread = None
 
     def _run(self) -> None:
+        jiggler.keep_awake()
         jiggling = False
-        while not self._stop.is_set():
-            idle = jiggler.get_idle_seconds()
-            if idle >= self._idle_threshold:
-                jiggler.jiggle(self._distance)
-                if not jiggling:
-                    self._on_status("jiggling", idle)
-                    jiggling = True
+        try:
+            while not self._stop.is_set():
+                idle = jiggler.get_idle_seconds()
+                if idle >= self._idle_threshold:
+                    jiggler.jiggle(self._distance)
+                    if not jiggling:
+                        self._on_status("jiggling", idle)
+                        jiggling = True
+                    else:
+                        self._on_status("jiggling", idle)
                 else:
-                    self._on_status("jiggling", idle)
-            else:
-                self._on_status("waiting", idle)
-                jiggling = False
-            self._stop.wait(self._check_interval)
+                    self._on_status("waiting", idle)
+                    jiggling = False
+                self._stop.wait(self._check_interval)
+        finally:
+            jiggler.allow_sleep()
 
 
 class JigglerApp(tk.Tk):

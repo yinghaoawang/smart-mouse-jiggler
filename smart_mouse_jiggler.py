@@ -28,12 +28,73 @@ from datetime import datetime
 user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
 
+# SetThreadExecutionState flags (keep the display and system awake).
+ES_CONTINUOUS = 0x80000000
+ES_SYSTEM_REQUIRED = 0x00000001
+ES_DISPLAY_REQUIRED = 0x00000002
+
+# SendInput constants.
+INPUT_MOUSE = 0
+MOUSEEVENTF_MOVE = 0x0001
+
+ULONG_PTR = ctypes.wintypes.WPARAM
+
 
 class LASTINPUTINFO(ctypes.Structure):
     _fields_ = [
         ("cbSize", wintypes.UINT),
         ("dwTime", wintypes.DWORD),
     ]
+
+
+class MOUSEINPUT(ctypes.Structure):
+    _fields_ = [
+        ("dx", wintypes.LONG),
+        ("dy", wintypes.LONG),
+        ("mouseData", wintypes.DWORD),
+        ("dwFlags", wintypes.DWORD),
+        ("time", wintypes.DWORD),
+        ("dwExtraInfo", ULONG_PTR),
+    ]
+
+
+class _INPUTUNION(ctypes.Union):
+    _fields_ = [("mi", MOUSEINPUT)]
+
+
+class INPUT(ctypes.Structure):
+    _fields_ = [
+        ("type", wintypes.DWORD),
+        ("union", _INPUTUNION),
+    ]
+
+
+def keep_awake() -> None:
+    """Tell Windows to keep the display and system awake."""
+    user32  # touch to keep import meaningful
+    kernel32.SetThreadExecutionState(
+        ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED
+    )
+
+
+def allow_sleep() -> None:
+    """Clear the keep-awake request so normal power management resumes."""
+    kernel32.SetThreadExecutionState(ES_CONTINUOUS)
+
+
+def _send_mouse_move(dx: int, dy: int) -> None:
+    """Inject a relative mouse move as genuine user input (resets idle timer)."""
+    inp = INPUT()
+    inp.type = INPUT_MOUSE
+    inp.union.mi = MOUSEINPUT(
+        dx=int(dx),
+        dy=int(dy),
+        mouseData=0,
+        dwFlags=MOUSEEVENTF_MOVE,
+        time=0,
+        dwExtraInfo=0,
+    )
+    user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT))
 
 
 def get_idle_seconds() -> float:
@@ -59,11 +120,14 @@ def move_cursor(x: int, y: int) -> None:
 
 
 def jiggle(distance: int) -> None:
-    """Nudge the cursor by `distance` pixels and return it to its origin."""
-    x, y = get_cursor_pos()
-    move_cursor(x + distance, y)
+    """Nudge the cursor by `distance` pixels and return it to its origin.
+
+    Uses SendInput so Windows registers it as real user activity, which resets
+    the idle timer and prevents the lock screen / display sleep.
+    """
+    _send_mouse_move(distance, 0)
     time.sleep(0.05)
-    move_cursor(x, y)
+    _send_mouse_move(-distance, 0)
 
 
 # --- Argument parsing --------------------------------------------------------
@@ -138,19 +202,23 @@ def run(idle_threshold: float, check_interval: float, distance: int, quiet: bool
         f"Smart Mouse Jiggler started. Jiggling after {idle_threshold:g}s idle, "
         f"checking every {check_interval:g}s. Press Ctrl+C to stop.",
     )
+    keep_awake()
     jiggled_while_idle = False
-    while True:
-        idle = get_idle_seconds()
-        if idle >= idle_threshold:
-            jiggle(distance)
-            if not jiggled_while_idle:
-                _log(quiet, f"Idle for {idle:g}s - jiggling to keep awake.")
-                jiggled_while_idle = True
-        else:
-            if jiggled_while_idle:
-                _log(quiet, "Activity detected - pausing jiggle.")
-            jiggled_while_idle = False
-        time.sleep(check_interval)
+    try:
+        while True:
+            idle = get_idle_seconds()
+            if idle >= idle_threshold:
+                jiggle(distance)
+                if not jiggled_while_idle:
+                    _log(quiet, f"Idle for {idle:g}s - jiggling to keep awake.")
+                    jiggled_while_idle = True
+            else:
+                if jiggled_while_idle:
+                    _log(quiet, "Activity detected - pausing jiggle.")
+                jiggled_while_idle = False
+            time.sleep(check_interval)
+    finally:
+        allow_sleep()
 
 
 def main(argv: list[str] | None = None) -> int:
