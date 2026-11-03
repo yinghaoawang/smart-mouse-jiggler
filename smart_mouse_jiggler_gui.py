@@ -80,6 +80,7 @@ class JigglerApp(tk.Tk):
 
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.after(0, self._on_start)
 
     # --- UI construction ---------------------------------------------------
 
