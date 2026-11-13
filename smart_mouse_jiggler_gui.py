@@ -10,13 +10,21 @@ Run with the py launcher on Windows:
 
 from __future__ import annotations
 
+import json
+import os
 import threading
 import time
 import tkinter as tk
 from datetime import datetime
+from pathlib import Path
 from tkinter import messagebox, ttk
 
 import smart_mouse_jiggler as jiggler
+
+
+def settings_path() -> Path:
+    base = os.environ.get("APPDATA") or str(Path.home())
+    return Path(base) / "SmartMouseJiggler" / "settings.json"
 
 
 class JigglerController:
@@ -78,9 +86,11 @@ class JigglerApp(tk.Tk):
         self.resizable(False, False)
         self.controller = JigglerController(self._on_status_threadsafe)
 
+        self._settings = self._load_settings()
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
-        self.after(0, self._on_start)
+        if self.run_on_launch.get():
+            self.after(0, self._on_start)
 
     # --- UI construction ---------------------------------------------------
 
@@ -90,29 +100,34 @@ class JigglerApp(tk.Tk):
         frame.grid(row=0, column=0, sticky="nsew")
 
         ttk.Label(frame, text="Idle before jiggling:").grid(row=0, column=0, sticky="w", **pad)
-        self.idle_value = tk.StringVar(value="60")
-        self.idle_unit = tk.StringVar(value="seconds")
+        self.idle_value = tk.StringVar(value=self._settings["idle_value"])
+        self.idle_unit = tk.StringVar(value=self._settings["idle_unit"])
         ttk.Spinbox(
             frame, from_=1, to=86400, width=8, textvariable=self.idle_value
         ).grid(row=0, column=1, sticky="w", **pad)
         ttk.OptionMenu(
-            frame, self.idle_unit, "seconds", "seconds", "minutes", "hours"
+            frame, self.idle_unit, self._settings["idle_unit"], "seconds", "minutes", "hours"
         ).grid(row=0, column=2, sticky="w", **pad)
 
         ttk.Label(frame, text="Check interval (seconds):").grid(row=1, column=0, sticky="w", **pad)
-        self.check_value = tk.StringVar(value="1")
+        self.check_value = tk.StringVar(value=self._settings["check_value"])
         ttk.Spinbox(
             frame, from_=1, to=3600, width=8, textvariable=self.check_value
         ).grid(row=1, column=1, sticky="w", **pad)
 
         ttk.Label(frame, text="Jiggle distance (pixels):").grid(row=2, column=0, sticky="w", **pad)
-        self.distance_value = tk.StringVar(value="1")
+        self.distance_value = tk.StringVar(value=self._settings["distance_value"])
         ttk.Spinbox(
             frame, from_=1, to=200, width=8, textvariable=self.distance_value
         ).grid(row=2, column=1, sticky="w", **pad)
 
+        self.run_on_launch = tk.BooleanVar(value=self._settings["run_on_launch"])
+        ttk.Checkbutton(
+            frame, text="Start jiggling when the app launches", variable=self.run_on_launch
+        ).grid(row=3, column=0, columnspan=3, sticky="w", **pad)
+
         button_row = ttk.Frame(frame)
-        button_row.grid(row=3, column=0, columnspan=3, pady=(10, 4))
+        button_row.grid(row=4, column=0, columnspan=3, pady=(10, 4))
         self.start_button = ttk.Button(button_row, text="Start", command=self._on_start)
         self.start_button.grid(row=0, column=0, padx=6)
         self.stop_button = ttk.Button(
@@ -124,7 +139,47 @@ class JigglerApp(tk.Tk):
         status = ttk.Label(
             frame, textvariable=self.status_var, foreground="#555", anchor="w"
         )
-        status.grid(row=4, column=0, columnspan=3, sticky="we", pady=(8, 0))
+        status.grid(row=5, column=0, columnspan=3, sticky="we", pady=(8, 0))
+
+    # --- Settings persistence ------------------------------------------------
+
+    DEFAULT_SETTINGS = {
+        "idle_value": "60",
+        "idle_unit": "seconds",
+        "check_value": "1",
+        "distance_value": "1",
+        "run_on_launch": True,
+    }
+
+    def _load_settings(self) -> dict:
+        settings = dict(self.DEFAULT_SETTINGS)
+        try:
+            with open(settings_path(), encoding="utf-8") as f:
+                saved = json.load(f)
+        except (OSError, ValueError):
+            return settings
+        for key in settings:
+            if key in saved and isinstance(saved[key], type(settings[key])):
+                settings[key] = saved[key]
+        if settings["idle_unit"] not in ("seconds", "minutes", "hours"):
+            settings["idle_unit"] = self.DEFAULT_SETTINGS["idle_unit"]
+        return settings
+
+    def _save_settings(self) -> None:
+        settings = {
+            "idle_value": self.idle_value.get(),
+            "idle_unit": self.idle_unit.get(),
+            "check_value": self.check_value.get(),
+            "distance_value": self.distance_value.get(),
+            "run_on_launch": self.run_on_launch.get(),
+        }
+        try:
+            path = settings_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(settings, f, indent=2)
+        except OSError:
+            pass  # Settings are a convenience; never block the app on them.
 
     # --- Event handlers ----------------------------------------------------
 
@@ -152,6 +207,7 @@ class JigglerApp(tk.Tk):
         if config is None:
             return
         idle_threshold, check_interval, distance = config
+        self._save_settings()
         self.controller.start(idle_threshold, check_interval, distance)
         self.start_button.config(state="disabled")
         self.stop_button.config(state="normal")
@@ -175,6 +231,7 @@ class JigglerApp(tk.Tk):
             self.status_var.set(f"[{timestamp}] Active ({idle:.0f}s idle) - jiggle paused.")
 
     def _on_close(self) -> None:
+        self._save_settings()
         self.controller.stop()
         self.destroy()
 
